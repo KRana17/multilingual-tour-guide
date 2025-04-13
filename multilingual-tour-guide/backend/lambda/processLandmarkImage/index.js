@@ -18,13 +18,19 @@ exports.handler = async (event) => {
     // Identify the landmark using Rekognition
     const rekognitionResult = await identifyLandmark(bucketName, imageKey);
     
+    // Log the rekognition result for debugging
+    console.log('Rekognition Result:', JSON.stringify(rekognitionResult, null, 2));
+    
     if (!rekognitionResult.isLandmark) {
       return {
         statusCode: 404,
         headers: {
           'Access-Control-Allow-Origin': '*'
         },
-        body: JSON.stringify({ message: 'No landmark detected in the image' })
+        body: JSON.stringify({ 
+          message: 'No landmark detected in the image. Please upload a clear image of a well-known landmark.',
+          detectedLabels: rekognitionResult.detectedLabels || []
+        })
       };
     }
     
@@ -67,24 +73,25 @@ exports.handler = async (event) => {
       
       description = translateResult.translatedText;
     }
-    
+    // *** COMMENTING OUT POLLY CODE START ***
     // Generate audio narration using Amazon Polly
-    const audioKey = `audio/${landmarkInfo.LandmarkId.replace(/\s+/g, '-').toLowerCase()}_${language}.mp3`;
+    //const audioKey = `audio/${landmarkInfo.LandmarkId.replace(/\s+/g, '-').toLowerCase()}_${language}.mp3`;
     
-    const pollyResult = await generateAndSaveAudio(
-      description,
-      language,
-      bucketName,
-      audioKey
-    );
-    
+    //const pollyResult = await generateAndSaveAudio(
+    //  description,
+    //  language,
+    //  bucketName,
+    //  audioKey
+    //);
+      // *** COMMENTING OUT POLLY CODE END ***
     // Prepare the response
     const response = {
       landmarkName: landmarkInfo.name,
       location: landmarkInfo.location,
       yearBuilt: landmarkInfo.yearBuilt,
       description: description,
-      audioUrl: pollyResult.audioUrl
+      // *** COMMENTING OUT audioUrl ***
+      // audioUrl: pollyResult.audioUrl
     };
     
     return {
@@ -103,7 +110,10 @@ exports.handler = async (event) => {
       headers: {
         'Access-Control-Allow-Origin': '*'
       },
-      body: JSON.stringify({ message: 'Error processing image', error: error.message })
+      body: JSON.stringify({ 
+        message: 'Error processing image. Please try again.',
+        error: error.message 
+      })
     };
   }
 };
@@ -114,8 +124,7 @@ exports.handler = async (event) => {
 async function identifyLandmark(bucketName, imageKey) {
   try {
     console.log(`Identifying landmarks in image: ${imageKey} from bucket: ${bucketName}`);
-    
-    // First try detectLabels to identify if the image contains landmarks/buildings
+
     const labelParams = {
       Image: {
         S3Object: {
@@ -123,36 +132,30 @@ async function identifyLandmark(bucketName, imageKey) {
           Name: imageKey
         }
       },
-      MaxLabels: 10,
-      MinConfidence: 70
+      MaxLabels: 5,
+      MinConfidence: 80
     };
-    
+
     const labelResults = await rekognition.detectLabels(labelParams).promise();
-    console.log('Label detection results:', JSON.stringify(labelResults, null, 2));
-    
-    // Check if any landmark-related labels are detected
-    const landmarkLabels = ['Architecture', 'Building', 'Monument', 'Tower', 'Landmark', 'Castle', 'Statue'];
-    const isLandmarkImage = labelResults.Labels.some(label => 
-      landmarkLabels.includes(label.Name) && label.Confidence > 70
-    );
-    
-    if (!isLandmarkImage) {
-      console.log('No landmark-related objects detected in the image');
-      return { 
-        isLandmark: false,
-        message: 'No landmark detected in the image'
-      };
-    }
-    
-    // For this implementation, we'll use the detected labels to make an educated guess
-    let landmarkName = determineLandmarkFromLabels(labelResults.Labels);
-    
+    console.log('Full Label detection results:', JSON.stringify(labelResults, null, 2));
+
+    const detectedLabels = labelResults.Labels.map(label => ({
+      name: label.Name,
+      confidence: label.Confidence
+    }));
+    console.log('Detected Labels:', JSON.stringify(detectedLabels, null, 2));
+
+    // More comprehensive landmark detection using determineLandmarkFromLabels
+    const landmarkName = determineLandmarkFromLabels(labelResults.Labels);
+    const isLandmark = landmarkName !== 'Unknown Landmark';
+    console.log('Landmark Identification Result:', { isLandmark, landmarkName });
+
     return {
-      isLandmark: true,
+      isLandmark: isLandmark,
       landmarkName: landmarkName,
-      confidence: 85.5 // Simulated confidence score
+      detectedLabels: detectedLabels
     };
-    
+
   } catch (error) {
     console.error('Error in Rekognition landmark detection:', error);
     throw error;
@@ -161,25 +164,71 @@ async function identifyLandmark(bucketName, imageKey) {
 
 /**
  * Determine landmark name from detected labels
- * This is a simplified approach - in a production environment,
- * you would use more sophisticated landmark detection
+ * Enhanced landmark detection logic
+ */
+/**
+ * Determine landmark name from detected labels
+ * Enhanced landmark detection logic
+ */
+/**
+ * Determine landmark name from detected labels
+ * Enhanced landmark detection logic
  */
 function determineLandmarkFromLabels(labels) {
-  if (labels.some(l => l.Name === 'Tower' && l.Confidence > 80)) {
-    return 'Eiffel Tower';
-  } else if (labels.some(l => l.Name === 'Statue' && l.Confidence > 80)) {
+  // Create a map of labels for easier checking (optional but can be helpful)
+  const labelMap = new Set(labels.map(l => l.Name));
+
+  // Directly check for "Statue of Liberty" with sufficient confidence
+  const statueOfLibertyLabel = labels.find(label => label.Name === 'Statue of Liberty' && label.Confidence >= 80);
+  if (statueOfLibertyLabel) {
     return 'Statue of Liberty';
-  } else if (labels.some(l => l.Name === 'Colosseum' && l.Confidence > 80)) {
-    return 'Colosseum';
-  } else if (labels.some(l => l.Name === 'Pyramid' && l.Confidence > 80)) {
-    return 'Great Pyramid of Giza';
-  } else if (labels.some(l => l.Name === 'Castle' && l.Confidence > 80)) {
-    return 'Neuschwanstein Castle';
-  } else {
-    return 'Unknown Landmark';
   }
+
+  // Landmark detection rules with multiple indicators and confidence thresholds
+  const landmarkRules = [
+    {
+      name: 'Eiffel Tower',
+      indicators: ['Tower', 'Architecture'],
+      confidenceThreshold: 80, // Require higher confidence for key indicators
+      additionalChecks: (labels) => labels.some(l => l.Name === 'Paris' && l.Confidence > 70) || labels.some(l => l.Name === 'France' && l.Confidence > 70),
+    },
+    {
+      name: 'Colosseum',
+      indicators: ['Amphitheater', 'Ruins'],
+      confidenceThreshold: 75,
+      additionalChecks: (labels) => labels.some(l => l.Name === 'Rome' && l.Confidence > 70) || labels.some(l => l.Name === 'Italy' && l.Confidence > 70),
+    },
+    {
+      name: 'Great Pyramid of Giza',
+      indicators: ['Pyramid'],
+      confidenceThreshold: 80,
+      additionalChecks: (labels) => labels.some(l => l.Name === 'Egypt' && l.Confidence > 70) || labels.some(l => l.Name === 'Giza' && l.Confidence > 70),
+    },
+    {
+      name: 'Neuschwanstein Castle',
+      indicators: ['Castle'],
+      confidenceThreshold: 80,
+      additionalChecks: (labels) => labels.some(l => l.Name === 'Bavaria' && l.Confidence > 70) || labels.some(l => l.Name === 'Germany' && l.Confidence > 70),
+    },
+    // Add more landmark rules here
+  ];
+
+  for (const rule of landmarkRules) {
+    const hasSufficientConfidence = rule.indicators.every(indicator =>
+      labels.some(l => l.Name === indicator && l.Confidence >= rule.confidenceThreshold)
+    );
+
+    const passesAdditionalChecks = rule.additionalChecks ? rule.additionalChecks(labels) : true;
+
+    if (hasSufficientConfidence && passesAdditionalChecks) {
+      return rule.name;
+    }
+  }
+
+  return 'Unknown Landmark';
 }
 
+// Rest of the code (translateText and generateAndSaveAudio functions) remains the same
 /**
  * Translates text from source language to target language
  */
