@@ -1,10 +1,21 @@
 const AWS = require('aws-sdk');
 const dynamodb = new AWS.DynamoDB.DocumentClient();
 
+// Re-include the normalization function here for consistency
+function normalizeLandmarkName(name) {
+  if (!name) {
+    return '';
+  }
+  return name.toLowerCase().trim().replace(/\s+/g, ''); // Use the same normalization as in your processing Lambda
+}
+
 exports.handler = async (event) => {
+  const rawLandmarkName = "Eiffel Tower";
+  const normalizedLandmarkId = normalizeLandmarkName(rawLandmarkName);
+
   const landmarkData = {
-    LandmarkId: "Eiffel Tower",
-    name: "Eiffel Tower",
+    LandmarkId: normalizedLandmarkId, // Use the normalized ID
+    name: rawLandmarkName, // Keep the original name for display
     location: "Paris, France",
     yearBuilt: 1889,
     description: {
@@ -36,22 +47,22 @@ exports.handler = async (event) => {
 
   try {
     await dynamodb.put(params).promise();
-    
+
     return {
       statusCode: 200,
-      body: JSON.stringify({ 
+      body: JSON.stringify({
         message: 'Landmark successfully inserted',
-        landmark: landmarkData.name 
+        landmark: landmarkData.name
       })
     };
   } catch (error) {
     console.error('Error inserting landmark:', error);
-    
+
     return {
       statusCode: 500,
-      body: JSON.stringify({ 
+      body: JSON.stringify({
         message: 'Failed to insert landmark',
-        error: error.message 
+        error: error.message
       })
     };
   }
