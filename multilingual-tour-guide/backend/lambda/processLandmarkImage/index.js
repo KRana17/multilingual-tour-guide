@@ -13,33 +13,72 @@ function normalizeLandmarkName(name) {
   return name.toLowerCase().replace(/\s+/g, '');
 }
 
-
-function determinePrimaryLandmarkLabel(labels) {
-  // First, look for exact matches of well-known landmarks with high confidence
-  const specificLandmarks = labels.filter(label =>
-    ['Eiffel Tower', 'Statue Of Liberty', 'Colosseum', /* Add more specific names */].includes(label.Name) && label.Confidence > 90 // Adjust confidence threshold if needed
-  );
-
-  if (specificLandmarks.length > 0) {
-    return specificLandmarks.reduce((prev, current) => (prev.Confidence > current.Confidence) ? prev : current);
+/**
+ * Calculate similarity score between two strings
+ * @param {string} str1 - First string to compare
+ * @param {string} str2 - Second string to compare
+ * @returns {number} - Similarity score between 0 and 1
+ */
+function calculateSimilarity(str1, str2) {
+  // Normalize both strings for comparison
+  const normalizedStr1 = normalizeLandmarkName(str1);
+  const normalizedStr2 = normalizeLandmarkName(str2);
+  
+  // Exact match
+  if (normalizedStr1 === normalizedStr2) {
+    return 1.0;
   }
-
-  // Then, consider landmarks based on keywords and high confidence
-  const landmarkKeywords = ['Tower', 'Bridge', 'Castle', 'Pyramid', 'Amphitheater', 'Statue', 'Temple', 'Opera House', 'Wall'];
-  const highConfidenceLandmarks = labels.filter(label =>
-    landmarkKeywords.some(keyword => label.Name.toLowerCase().includes(keyword.toLowerCase())) && label.Confidence > 80
-  );
-
-  if (highConfidenceLandmarks.length > 0) {
-    return highConfidenceLandmarks.reduce((prev, current) => (prev.Confidence > current.Confidence) ? prev : current);
+  
+  // Check if one string contains the other
+  if (normalizedStr1.includes(normalizedStr2) || normalizedStr2.includes(normalizedStr1)) {
+    // Calculate containment score based on length ratio
+    const containmentScore = Math.min(normalizedStr1.length, normalizedStr2.length) / 
+                             Math.max(normalizedStr1.length, normalizedStr2.length);
+    return Math.max(0.7, containmentScore); // Minimum 0.7 score for containment
   }
-
-  // If no specific or keyword-based high-confidence landmarks, return the highest confidence label overall
-  if (labels.length > 0) {
-    return labels.reduce((prev, current) => (prev.Confidence > current.Confidence) ? prev : current);
+  
+  // Calculate word overlap for multi-word landmarks
+  const words1 = normalizedStr1.split(/\W+/).filter(word => word.length > 0);
+  const words2 = normalizedStr2.split(/\W+/).filter(word => word.length > 0);
+  
+  if (words1.length > 1 || words2.length > 1) {
+    let matchCount = 0;
+    for (const word1 of words1) {
+      if (word1.length <= 2) continue; // Skip very short words
+      for (const word2 of words2) {
+        if (word2.length <= 2) continue; // Skip very short words
+        if (word1 === word2 || word1.includes(word2) || word2.includes(word1)) {
+          matchCount++;
+          break;
+        }
+      }
+    }
+    
+    const overlapScore = matchCount / Math.max(words1.length, words2.length);
+    if (overlapScore > 0) {
+      return Math.min(0.9, 0.5 + overlapScore * 0.4); // Scale between 0.5 and 0.9
+    }
   }
+  
+  // Default low similarity
+  return 0.0;
+}
 
-  return null;
+/**
+ * Check if a label is related to landmarks or monuments
+ * @param {string} label - Label to check
+ * @returns {boolean} - True if label is related to landmarks
+ */
+function isLandmarkRelatedLabel(label) {
+  const landmarkKeywords = [
+    'landmark', 'monument', 'tower', 'statue', 'temple', 'palace', 
+    'castle', 'cathedral', 'church', 'mosque', 'pyramid', 'ruins',
+    'historical', 'heritage', 'ancient', 'architecture', 'wonder',
+    'famous', 'tourist', 'attraction', 'site', 'building', 'structure'
+  ];
+  
+  const normalizedLabel = normalizeLandmarkName(label);
+  return landmarkKeywords.some(keyword => normalizedLabel.includes(keyword));
 }
 
 async function identifyLandmark(bucketName, imageKey) {
@@ -53,8 +92,8 @@ async function identifyLandmark(bucketName, imageKey) {
           Name: imageKey
         }
       },
-      MaxLabels: 10,
-      MinConfidence: 70
+      MaxLabels: 15, // Increased from 10 to get more potential labels
+      MinConfidence: 60 // Lowered from 70 to catch more potential matches
     };
 
     const labelResults = await rekognition.detectLabels(labelParams).promise();
@@ -66,23 +105,221 @@ async function identifyLandmark(bucketName, imageKey) {
     }));
     console.log('Detected Labels:', JSON.stringify(detectedLabels, null, 2));
 
-    let normalizedLandmarkName = 'unknownlandmark';
-    let isLandmarkDetected = false;
-    let rawLandmarkName = null;
+    // Define popular landmarks with alternative names and keywords
+    const landmarkDefinitions = [
+      {
+        primaryName: "Eiffel Tower",
+        alternativeNames: ["Tour Eiffel", "Iron Lady", "La Tour Eiffel"],
+        keywords: ["paris", "france", "iron", "tower"]
+      },
+      {
+        primaryName: "Statue of Liberty",
+        alternativeNames: ["Liberty Enlightening the World", "Lady Liberty"],
+        keywords: ["new york", "liberty island", "usa", "america"]
+      },
+      {
+        primaryName: "Colosseum",
+        alternativeNames: ["Coliseum", "Flavian Amphitheatre", "Roman Colosseum"],
+        keywords: ["rome", "italy", "arena", "amphitheater", "gladiator"]
+      },
+      {
+        primaryName: "Great Wall of China",
+        alternativeNames: ["Great Wall", "Chinese Wall"],
+        keywords: ["china", "wall", "beijing", "defense"]
+      },
+      {
+        primaryName: "Machu Picchu",
+        alternativeNames: ["Lost City of the Incas"],
+        keywords: ["peru", "inca", "ruins", "andes"]
+      },
+      {
+        primaryName: "Pyramids of Giza",
+        alternativeNames: ["Great Pyramid", "Egyptian Pyramids", "Pyramid of Khufu"],
+        keywords: ["egypt", "pyramid", "pharaoh", "cairo", "sphinx"]
+      },
+      {
+        primaryName: "Taj Mahal",
+        alternativeNames: ["Crown of Palaces"],
+        keywords: ["india", "agra", "mausoleum", "marble", "mughal"]
+      },
+      {
+        primaryName: "Big Ben",
+        alternativeNames: ["Elizabeth Tower", "Clock Tower", "Westminster Clock"],
+        keywords: ["london", "england", "uk", "parliament", "westminster", "clock"]
+      },
+      {
+        primaryName: "Sydney Opera House",
+        alternativeNames: ["Opera House"],
+        keywords: ["sydney", "australia", "harbor", "theatre", "concert hall"]
+      },
+      {
+        primaryName: "Mount Fuji",
+        alternativeNames: ["Fujisan", "Fuji-san", "Fujiyama"],
+        keywords: ["japan", "mountain", "volcano", "peak"]
+      }
+    ];
 
-    const primaryLandmarkLabel = determinePrimaryLandmarkLabel(labelResults.Labels);
+    // Extract all landmark names for simple matching
+    const popularDestinations = landmarkDefinitions.map(def => def.primaryName);
+    const allLandmarkNames = landmarkDefinitions.reduce((names, def) => {
+      return [...names, def.primaryName, ...def.alternativeNames];
+    }, []);
 
-    if (primaryLandmarkLabel) {
-      rawLandmarkName = primaryLandmarkLabel.Name;
-      normalizedLandmarkName = normalizeLandmarkName(rawLandmarkName);
-      isLandmarkDetected = normalizedLandmarkName !== 'unknownlandmark';
-      console.log('Primary Landmark Label:', rawLandmarkName, 'Normalized:', normalizedLandmarkName);
+    // First pass: Check for exact matches with primary names
+    for (const label of labelResults.Labels) {
+      if (popularDestinations.includes(label.Name) && label.Confidence >= 75) {
+        const normalizedName = normalizeLandmarkName(label.Name);
+        console.log(`Exact match found for landmark: ${label.Name} with confidence ${label.Confidence}`);
+        return {
+          isLandmark: true,
+          landmarkName: normalizedName,
+          rawLandmarkName: label.Name,
+          detectedLabels: detectedLabels,
+          matchType: "exact",
+          confidence: label.Confidence
+        };
+      }
     }
 
+    // Second pass: Check for matches with alternative names
+    for (const label of labelResults.Labels) {
+      for (const landmarkDef of landmarkDefinitions) {
+        if (landmarkDef.alternativeNames.includes(label.Name) && label.Confidence >= 75) {
+          const normalizedName = normalizeLandmarkName(landmarkDef.primaryName);
+          console.log(`Alternative name match found for landmark: ${label.Name} -> ${landmarkDef.primaryName} with confidence ${label.Confidence}`);
+          return {
+            isLandmark: true,
+            landmarkName: normalizedName,
+            rawLandmarkName: landmarkDef.primaryName,
+            detectedLabels: detectedLabels,
+            matchType: "alternative",
+            confidence: label.Confidence
+          };
+        }
+      }
+    }
+
+    // Third pass: Check for similarity matches
+    let bestMatch = null;
+    let bestScore = 0;
+    let bestConfidence = 0;
+    
+    for (const label of labelResults.Labels) {
+      if (label.Confidence < 70) continue; // Skip low confidence labels
+      
+      for (const landmarkDef of landmarkDefinitions) {
+        // Check similarity with primary name
+        let similarityScore = calculateSimilarity(label.Name, landmarkDef.primaryName);
+        
+        // Check similarity with alternative names
+        for (const altName of landmarkDef.alternativeNames) {
+          const altSimilarityScore = calculateSimilarity(label.Name, altName);
+          if (altSimilarityScore > similarityScore) {
+            similarityScore = altSimilarityScore;
+          }
+        }
+        
+        // Calculate combined score (similarity * confidence)
+        const combinedScore = similarityScore * (label.Confidence / 100);
+        
+        if (similarityScore >= 0.7 && combinedScore > bestScore) {
+          bestMatch = landmarkDef.primaryName;
+          bestScore = combinedScore;
+          bestConfidence = label.Confidence;
+        }
+      }
+    }
+    
+    if (bestMatch) {
+      const normalizedName = normalizeLandmarkName(bestMatch);
+      console.log(`Similarity match found for landmark: ${bestMatch} with similarity score ${bestScore.toFixed(2)} and confidence ${bestConfidence}`);
+      return {
+        isLandmark: true,
+        landmarkName: normalizedName,
+        rawLandmarkName: bestMatch,
+        detectedLabels: detectedLabels,
+        matchType: "similarity",
+        confidence: bestConfidence,
+        similarityScore: bestScore
+      };
+    }
+
+    // Fourth pass: Check for landmark-related labels with high confidence
+    const landmarkLabels = labelResults.Labels.filter(label => 
+      isLandmarkRelatedLabel(label.Name) && label.Confidence >= 85
+    );
+    
+    if (landmarkLabels.length > 0) {
+      // Find the highest confidence non-generic landmark label
+      const nonGenericLabels = labelResults.Labels.filter(label => 
+        !["Landmark", "Monument", "Architecture", "Building", "Structure"].includes(label.Name) && 
+        label.Confidence >= 75
+      );
+      
+      if (nonGenericLabels.length > 0) {
+        // Sort by confidence
+        nonGenericLabels.sort((a, b) => b.Confidence - a.Confidence);
+        const bestLabel = nonGenericLabels[0];
+        
+        // Try to match with known landmarks
+        let bestLandmarkMatch = null;
+        let bestMatchScore = 0;
+        
+        for (const landmarkDef of landmarkDefinitions) {
+          const similarityScore = calculateSimilarity(bestLabel.Name, landmarkDef.primaryName);
+          if (similarityScore > bestMatchScore) {
+            bestMatchScore = similarityScore;
+            bestLandmarkMatch = landmarkDef.primaryName;
+          }
+          
+          // Also check keywords
+          const normalizedLabel = normalizeLandmarkName(bestLabel.Name);
+          const keywordMatches = landmarkDef.keywords.filter(keyword => 
+            normalizedLabel.includes(normalizeLandmarkName(keyword))
+          );
+          
+          if (keywordMatches.length > 0 && keywordMatches.length / landmarkDef.keywords.length > bestMatchScore) {
+            bestMatchScore = keywordMatches.length / landmarkDef.keywords.length;
+            bestLandmarkMatch = landmarkDef.primaryName;
+          }
+        }
+        
+        if (bestLandmarkMatch && bestMatchScore >= 0.3) {
+          const normalizedName = normalizeLandmarkName(bestLandmarkMatch);
+          console.log(`Keyword/context match found for landmark: ${bestLandmarkMatch} based on label ${bestLabel.Name}`);
+          return {
+            isLandmark: true,
+            landmarkName: normalizedName,
+            rawLandmarkName: bestLandmarkMatch,
+            detectedLabels: detectedLabels,
+            matchType: "keyword",
+            confidence: bestLabel.Confidence,
+            matchScore: bestMatchScore
+          };
+        }
+        
+        // If we have a high confidence non-generic label that seems to be a landmark
+        // but doesn't match our known landmarks, return it as an unknown landmark
+        if (bestLabel.Confidence >= 85 && landmarkLabels.length >= 2) {
+          const normalizedName = normalizeLandmarkName(bestLabel.Name);
+          console.log(`Potential unknown landmark detected: ${bestLabel.Name} with confidence ${bestLabel.Confidence}`);
+          return {
+            isLandmark: true,
+            landmarkName: normalizedName,
+            rawLandmarkName: bestLabel.Name,
+            detectedLabels: detectedLabels,
+            matchType: "unknown",
+            confidence: bestLabel.Confidence
+          };
+        }
+      }
+    }
+
+    // No landmark detected
+    console.log('No landmark detected in the image');
     return {
-      isLandmark: isLandmarkDetected,
-      landmarkName: normalizedLandmarkName,
-      rawLandmarkName: rawLandmarkName, // Return the raw name for potential logging/debugging
+      isLandmark: false,
+      landmarkName: "Unknown Landmark",
       detectedLabels: detectedLabels
     };
 
@@ -198,6 +435,10 @@ exports.handler = async (event) => {
                 Name: 'LandmarkName',
                 Value: rekognitionResult.landmarkName
               },
+              {
+                Name: 'MatchType',
+                Value: rekognitionResult.matchType || 'unknown'
+              }
             ],
             Unit: 'Count',
             Value: 1
@@ -210,7 +451,7 @@ exports.handler = async (event) => {
       // Non-critical error, continue processing
     }
 
-    const normalizedLandmarkId = rekognitionResult.landmarkName; // Already normalized in identifyLandmark
+    const normalizedLandmarkId = rekognitionResult.landmarkName;
 
     console.log('Attempting to retrieve data for LandmarkId:', normalizedLandmarkId);
 
@@ -219,7 +460,7 @@ exports.handler = async (event) => {
       landmarkData = await dynamodb.get({
         TableName: landmarkTable,
         Key: {
-          LandmarkId: normalizedLandmarkId // Use the normalized name for the key
+          LandmarkId: normalizedLandmarkId
         }
       }).promise();
       console.log('DynamoDB Get Result:', JSON.stringify(landmarkData, null, 2));
@@ -236,10 +477,11 @@ exports.handler = async (event) => {
     } else {
       landmarkInfo = {
         LandmarkId: normalizedLandmarkId,
-        name: rekognitionResult.rawLandmarkName || rekognitionResult.landmarkName, // Use raw name for fallback display
+        name: rekognitionResult.rawLandmarkName || rekognitionResult.landmarkName,
         location: 'Unknown',
         yearBuilt: 'Unknown',
-        description: { en: `This appears to be ${rekognitionResult.rawLandmarkName || rekognitionResult.landmarkName}.`, fr: `Cela semble être ${rekognitionResult.rawLandmarkName || rekognitionResult.rawLandmarkName}.` }
+        description: { en: `This appears to be ${rekognitionResult.rawLandmarkName || rekognitionResult.landmarkName}.`, fr: `Cela semble être ${rekognitionResult.rawLandmarkName || rekognitionResult.rawLandmarkName}.` },
+        interestingFacts: { en: [], fr: [] }
       };
       console.log('Landmark not found in DynamoDB, using fallback data:', JSON.stringify(landmarkInfo, null, 2));
     }
@@ -263,6 +505,12 @@ exports.handler = async (event) => {
       location: landmarkInfo.location,
       yearBuilt: landmarkInfo.yearBuilt,
       description: description,
+      interestingFacts: landmarkInfo.interestingFacts ? (landmarkInfo.interestingFacts[language] || landmarkInfo.interestingFacts.en || []) : [],
+      matchDetails: {
+        matchType: rekognitionResult.matchType || 'unknown',
+        confidence: rekognitionResult.confidence || 0,
+        similarityScore: rekognitionResult.similarityScore || 0
+      }
       // *** COMMENTING OUT audioUrl ***
       // audioUrl: pollyResult.audioUrl
     };
